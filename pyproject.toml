@@ -1,0 +1,14 @@
+[project]
+name = "paradakusz-zebrafish-macrophage-analysis"
+version = "0.2.0"
+description = "Pipeline to analyze 3D images of zebrafish"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "imaris-ims-file-reader>=0.1.8",
+    "matplotlib>=3.11.1",
+    "numpy>=2.5.2",
+    "pandas>=3.0.5",
+    "scikit-image>=0.26.0",
+    "tifffile>=2026.8.23",
+]

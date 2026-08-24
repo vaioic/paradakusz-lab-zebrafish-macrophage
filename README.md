@@ -10,43 +10,75 @@ The goal is to establish a robust and reproducible pipeline capable of extractin
 
 This project is in active development and things might change rapidly.
 
-## Getting started
 
-### Prerequisites
+## Usage
 
-- [Python](https://www.python.org/downloads/) version 3.14.0
+### Setup and installation
 
-### Installation
+#### Using uv (Recommended)
 
-1. Download or clone the GitHub repository
+This project uses [uv](https://docs.astral.sh/uv/) to manage virtual environments and dependencies. 
+
+1. Install ``uv``
+    * **macOS or Linux:** ``curl -LsSf https://astral.sh/uv/install.sh | sh``
+    * **Windows:** ``powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"``
+    
+    To check if you have ``uv`` installed, open a terminal and run ``uv --version``.
+
+2. Clone the repository
    ```bash
-   git clone git@github.com:vaioic/OIC-264.git
-   cd OIC-264
+   git clone git@github.com:vaioic/paradakusz-lab-zebrafish-macrophage.git
+   cd paradakusz-lab-zebrafish-macrophage
    ```
 
-2. Create a python virtual environment
+3. Sync the environment (this will setup the correct virtual environment and dependencies)
+   ```bash
+   uv sync
+   ```
+
+4. Run the analysis
+   ```bash
+   uv run analysis/analysis_script.py
+   ```
+
+#### Using venv and pip
+
+1. Clone the repository
+   ```bash
+   git clone git@github.com:vaioic/paradakusz-lab-zebrafish-macrophage.git
+   cd paradakusz-lab-zebrafish-macrophage
+   ```
+
+2. Create a virtual environment
    ```bash
    python -m venv venv
    ```
 
-3. Activate the virtual environment
+3. Activate the environment
    ```bash
-   .\venv\Scripts\activate
+   # macOS/Linux
+   source ./venv/bin/activate
+
+   # Windows (PowerShell)
+   .\venv\Scripts\Activate.ps1
    ```
 
-4. Install the dependencies using Pip
+4. Install the repository as an editable module
    ```bash
-   python -m pip install -r .\requirements.txt
+   python -m pip install -e .
    ```
 
-### Running the code
-
-1. Start the virtual environment if not already loaded
+5. Run the analysis script
    ```bash
-   .\venv\Scripts\activate
+   python -m analysis.analysis_script
+
+   # or
+   python analysis/analysis_script.py
    ```
 
-2. Call the ``analyze_images`` script. The script takes two input arguments: a string containing the path to an image or a directory containing images, and the path to the output directory.
+## Analysis
+
+To analyze images, call the ``analyze_images`` script. The script takes two input arguments: a string containing the path to an image or a directory containing images, and the path to the output directory.
 
    Example:
    ```bash
@@ -69,20 +101,34 @@ The script will generate the following files:
 
 ## Issues
 
-If you encounter any issues with running the code or have any questions, please create an [Issue](https://github.com/vaioic/OIC-264/issues) or send an email to opticalimaging@vai.org. If you are reporting a programmatic bug, please include any error messages to aid with troubleshooting.
+If you encounter any issues with running the code or have any questions, please create an [Issue](https://github.com/vaioic/paradakusz-lab-zebrafish-macrophage/issues) or send an email to opticalimaging@vai.org. If you are reporting a bug, please include any error messages to aid with troubleshooting.
 
-## Acknowledgements
+## License
+
+This project is licensed under the GPLv3 License. See the [LICENSE](LICENSE) file for details.
+
+## Citing & Acknowledgements
+
+This repository is publicly available for open-source use, but it is developed and maintained by the Optical Imaging Core at the Van Andel Institute. If code from this repository contributed to data used in a publication, abstract, or presentation, please cite and acknowledge our work based on your affiliation:
+
+### For External Users
+Please cite this repository and acknowledge the author(s) in your publication's materials, methods, or acknowledgements section:
+> "Image analysis pipelines were adapted from open-source tools developed by the Optical Imaging Core at the Van Andel Institute (GitHub:[paradakusz-lab-zebrafish-macrophage](https://github.com/vaioic/paradakusz-lab-zebrafish-macrophage))."
+
+If you require custom adjustments or advanced analysis support, please contact us at opticalimaging@vai.org.
+
+### For Internal Users & Close Collaborators
+If you are an internal researcher or an external collaborator working directly with our staff, please include our Research Resource Identifier (RRID) in your materials and methods section:
+> "Image analysis and data processing were performed in collaboration with the Optical Imaging Core at the Van Andel Institute (RRID:SCR_021968)."
+
+Please review the Acknowledgement and Authorship Guidelines on [VAI's Core Technology and Services website](https://vanandelinstitute.sharepoint.com/sites/Cores/SitePages/Acknowledgements-and-Authorship.aspx)
 
 ### Contributors
-<a href="https://github.com/vaioic/OIC-264/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=vaioic/OIC-264" />
+<a href="https://github.com/vaioic/paradakusz-lab-zebrafish-macrophage/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=vaioic/paradakusz-lab-zebrafish-macrophage" />
 </a>
 
-### Dependencies
+## Changelog
 
-This project relies on the following packages:
-
-* xarray v2026.2.0
-* scikit-image v0.26.0
-
-**Note:** For full dependency list, see [requirements.txt](requirements.txt).
+### v0.1.0 (2026-03-19)
+* Initial commit with preliminary code ([OIC-264](https://varioic.atlassian.net/browse/OIC-264))
