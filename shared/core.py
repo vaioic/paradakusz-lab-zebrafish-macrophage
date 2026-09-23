@@ -1,6 +1,8 @@
 import argparse
+import logging
 from pathlib import Path
 
+import cv2
 import numpy as np
 import skimage as sk
 import tifffile
@@ -35,10 +37,7 @@ def read_image(file):
         The file was not found
     """
 
-    if not (isinstance(file, str) or isinstance(file, Path)):
-        raise ValueError("file input must be a str or Path.")
-    elif isinstance(file, str):
-        file = Path(file)
+    file = Path(file)
 
     if not file.is_file():
         raise FileNotFoundError(
@@ -47,13 +46,15 @@ def read_image(file):
 
     img = ims(file)
 
-    nucl_img = img[0, 0, :, :, :]
-    protein_img = img[0, 1, :, :, :]
+    nucl_img = (img[0, 0, :, :, :]).copy()
+    protein_img = (img[0, 1, :, :, :]).copy()
+
+    del img
 
     return nucl_img, protein_img
 
 
-def segment_cells_3d(img):
+def segment_cells_3d(img, plot_debug=False):
     """
     Segment macrophages in 3D
 
@@ -79,10 +80,23 @@ def segment_cells_3d(img):
 
     mask = sk.morphology.opening(mask, sk.morphology.footprint_rectangle((1, 3, 3)))
 
+    # mask = sk.morphology.opening(mask, sk.morphology.ball(3))
+    mask = sk.morphology.remove_small_holes(mask, max_size=1000, connectivity=3)
+
     for iZ in range(mask.shape[0]):
-        mask = sk.morphology.remove_small_holes(mask, max_size=1000)
+        # Try and filter non-round objects
+        curr_mask = mask[iZ, ...]
+        curr_mask = sk.morphology.opening(curr_mask, sk.morphology.disk(7))
+        mask[iZ, ...] = curr_mask
 
     labels = sk.measure.label(mask)
+
+    if plot_debug:
+        overlay = sk.segmentation.mark_boundaries(img_norm[7, :, :], labels[7, :, :])
+
+        plt.imshow(overlay)
+        plt.axis("image")
+        plt.show()
 
     return labels
 
@@ -156,7 +170,7 @@ def normalize_image_prctile(img, upper=100, lower=2):
         The normalized image data
     """
 
-    if not img.dtype == np.float32:
+    if img.dtype != np.float32:
         img = img.astype(np.float32)
 
     upper_value = np.percentile(img, upper)
@@ -207,7 +221,7 @@ def analyze_image(file, output_dir, save_data=True):
     elif isinstance(file, Path):
         pass
     else:
-        raise ValueError(
+        raise TypeError(
             f"Expected file to be a str or Path. Instead it is a {type(file)}."
         )
 
@@ -216,7 +230,7 @@ def analyze_image(file, output_dir, save_data=True):
     elif isinstance(output_dir, Path):
         pass
     else:
-        raise ValueError(
+        raise TypeError(
             f"Expected output_dir to be a str or Path. Instead it is a {type(output_dir)}."
         )
 
@@ -227,6 +241,8 @@ def analyze_image(file, output_dir, save_data=True):
         raise ValueError(
             f"The output path {output_dir} does not seem to point to a valid directory"
         )
+
+    plt.close("all")
 
     nucl_img, protein_img = read_image(file)
 
@@ -241,6 +257,7 @@ def analyze_image(file, output_dir, save_data=True):
     red_voxels = np.zeros(len(props))
     volume_ratio = np.zeros(len(props))
     sphericity = np.zeros(len(props))
+    feret_diameter_max = np.zeros(len(props))
     for cnt, cell in enumerate(props):
         # Measure the volume of red in the cell
         num_voxels = np.count_nonzero(cell_labels == cell.label)
@@ -258,13 +275,18 @@ def analyze_image(file, output_dir, save_data=True):
             sphericity[cnt] = (
                 np.pi ** (1 / 3) * (6 * cell.area) ** (2 / 3)
             ) / surf_area
+
+            feret_diameter_max[cnt] = cell.feret_diameter_max
         except ValueError:
             sphericity[cnt] = 0
+
+            feret_diameter_max[cnt] = 0
 
     # Generate an xarray Dataset
     ds = xr.Dataset(
         data_vars={
             "volume": ("index", [p.area for p in props]),
+            "feret_diameter_max": ("index", feret_diameter_max),
             "red_volume": ("index", red_voxels),
             "mean_red_intensity": ("index", [p.intensity_mean for p in props]),
             "ratio_red_volume": ("index", volume_ratio),
@@ -298,7 +320,7 @@ def analyze_image(file, output_dir, save_data=True):
         coords={"image": ("index", [file.stem])},
     )
 
-    fn = "results_" + str(file.stem)
+    fn = str(file.stem)
 
     export_tiff_stack(
         nucl_img,
@@ -311,8 +333,8 @@ def analyze_image(file, output_dir, save_data=True):
 
     if save_data:
         save_datasets(ds, ds_image, output_dir=output_dir, filename_prefix=fn)
-    else:
-        return ds, ds_image
+
+    return ds, ds_image
 
 
 def save_datasets(ds, ds_image, output_dir, filename_prefix=None):
@@ -344,17 +366,17 @@ def save_datasets(ds, ds_image, output_dir, filename_prefix=None):
 
     # Validate inputs
     if not isinstance(ds, xr.Dataset):
-        raise ValueError(
+        raise TypeError(
             f"Expected ds to be an xarray Dataset. Instead it is a {type(ds)}."
         )
 
     if not isinstance(ds_image, xr.Dataset):
-        raise ValueError(
+        raise TypeError(
             f"Expected ds_image to be an xarray Dataset. Instead it is a {type(ds_image)}."
         )
 
     if not isinstance(output_dir, Path):
-        raise ValueError(
+        raise TypeError(
             f"Expected output_dir to be a Path. Instead it is a {type(output_dir)}."
         )
 
@@ -367,6 +389,9 @@ def save_datasets(ds, ds_image, output_dir, filename_prefix=None):
     ds.to_netcdf(output_dir / ("results" + fn + ".nc"))
 
     df = ds.to_dataframe().reset_index()
+
+    # print(df.columns)
+
     col_order = [
         "image",
         "label",
@@ -375,6 +400,7 @@ def save_datasets(ds, ds_image, output_dir, filename_prefix=None):
         "ratio_red_volume",
         "mean_red_intensity",
         "sphericity",
+        "feret_diameter_max",
     ]
     headers = [
         "Image",
@@ -384,6 +410,7 @@ def save_datasets(ds, ds_image, output_dir, filename_prefix=None):
         "Volume Ratio (Protein/Cell)",
         "Mean Protein Intensity",
         "Cell Sphericity",
+        "Diameter (pixel)",
     ]
 
     df[col_order].to_csv(
@@ -414,7 +441,7 @@ def save_datasets(ds, ds_image, output_dir, filename_prefix=None):
     )
 
 
-def export_tiff_stack(
+def export_tiff_stack_old(
     nucl_img, nucl_labels, protein_img, protein_labels, props, output_fn
 ):
     """
@@ -443,6 +470,7 @@ def export_tiff_stack(
     # Normalize the images
     # nucl_img = normalize_image(nucl_img, max_factor=0.9, min_factor=0.0)
     # protein_img = normalize_image(protein_img, max_factor=0.8, min_factor=0.0)
+    plt.close("all")
 
     nucl_img = normalize_image_prctile(nucl_img, upper=99.9, lower=10)
     protein_img = normalize_image_prctile(protein_img, upper=99.9, lower=10)
@@ -510,6 +538,52 @@ def export_tiff_stack(
     tifffile.imwrite(output_fn, final_stack_image, photometric="rgb")
 
 
+def export_tiff_stack(
+    nucl_img, nucl_labels, protein_img, protein_labels, props, output_fn
+):
+    nucl_img = normalize_image_prctile(nucl_img, upper=99.9, lower=10)
+    protein_img = normalize_image_prctile(protein_img, upper=99.9, lower=10)
+
+    nz, ny, nx = nucl_img.shape
+    output_slices = []
+
+    for iZ in range(nz):
+        im_rgb = np.zeros((ny, nx, 3), dtype=np.float32)
+        im_rgb[..., 0] = protein_img[iZ, :, :]
+        im_rgb[..., 1] = nucl_img[iZ, :, :]
+
+        im_rgb = sk.segmentation.mark_boundaries(
+            im_rgb, nucl_labels[iZ, :, :], color=(1, 1, 0)
+        )
+        im_rgb = sk.segmentation.mark_boundaries(
+            im_rgb, protein_labels[iZ, :, :], color=(0, 1, 1)
+        )
+
+        # Convert float [0, 1] to uint8 [0, 255] for drawing
+        img_uint8 = (im_rgb * 255).astype(np.uint8)
+
+        for prop in props:
+            z_min, y_min, x_min, z_max, y_max, x_max = prop.bbox
+            if z_min <= iZ < z_max:
+                zyx = prop.centroid
+                x, y = int(zyx[2]), int(zyx[1])
+                cv2.putText(
+                    img_uint8,
+                    str(prop.label),
+                    (x, y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.3,
+                    (255, 255, 255),
+                    1,
+                    cv2.LINE_AA,
+                )
+
+        output_slices.append(img_uint8)
+
+    final_stack_image = np.stack(output_slices, axis=0)
+    tifffile.imwrite(output_fn, final_stack_image, photometric="rgb")
+
+
 def analyze_images_in_dir(data_dir, output_dir):
     """
     Process image files in a directory
@@ -547,7 +621,7 @@ def analyze_images_in_dir(data_dir, output_dir):
     elif isinstance(data_dir, Path):
         pass
     else:
-        raise ValueError(
+        raise TypeError(
             f"Expected data_dir argument to be a str or Path. Instead it is a {type(data_dir)}."
         )
 
@@ -564,7 +638,7 @@ def analyze_images_in_dir(data_dir, output_dir):
     elif isinstance(output_dir, Path):
         pass
     else:
-        raise ValueError(
+        raise TypeError(
             f"Expected output_dir argument to be a str or Path. Instead it is a {type(output_dir)}."
         )
 
@@ -581,11 +655,20 @@ def analyze_images_in_dir(data_dir, output_dir):
     ds_list = []
     ds_image_list = []
 
+    # Set up error logging
+    logging.basicConfig(
+        filename=output_dir / "error.log",
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        force=True,
+    )
+    logger = logging.getLogger(__name__)
+
     for f in files:
         try:
-            ds, ds_image = analyze_image(f, output_dir, save_data=False)
-        except Exception as e:
-            print(f"Error processing file {f}. Error details: {e}.")
+            ds, ds_image = analyze_image(f, output_dir, save_data=True)
+        except Exception:
+            logger.exception(f"Error processing file {f}")
             continue
 
         ds_list.append(ds)
