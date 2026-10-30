@@ -230,7 +230,8 @@ def analyze_image(file, output_dir, save_data=True):
 
     nucl_img, protein_img = read_image(file)
 
-    cell_labels = segment_cells_3d(nucl_img)
+    # cell_labels = segment_cells_3d(nucl_img)
+    cell_labels = segment_cells_cellpose_3d(nucl_img, model_type="cpsam", diameter=30)
     blob_labels = segment_blobs(protein_img)
 
     # Measure properties
@@ -649,3 +650,167 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def segment_cells_cellpose_3d(
+    img, model_type="cpsam", diameter=None, stitch_threshold=0.3
+):
+    """
+    Segment macrophages in 3D using Cellpose slice-by-slice with 3D stitching,
+    and remove any objects that only appear in a single Z-slice.
+
+    Parameters
+    ----------
+    img : ndarray
+        Input 3D image with shape [Z, Y, X]
+    model_type : str, optional
+        Cellpose model type, by default 'cpsam'
+    diameter : float, optional
+        Expected cell diameter in pixels, by default None
+    stitch_threshold : float, optional
+        Threshold for 3D mask stitching, by default 0.3.
+
+    Returns
+    -------
+    labels_3d : ndarray
+        3D labeled array with shape [Z, Y, X] with single-slice artifacts removed.
+    """
+    try:
+        from cellpose import models
+    except ImportError as e:
+        raise ImportError(
+            "Cellpose is not installed. Please install it using 'pip install cellpose'."
+        ) from e
+
+    model = models.CellposeModel(model_type=model_type)
+
+    if not img.dtype == np.float32:
+        img_input = img.astype(np.float32)
+    else:
+        img_input = img
+
+    masks, flows, styles = model.eval(
+        img_input,
+        diameter=diameter,
+        channels=[0, 0],
+        z_axis=0,
+        stitch_threshold=stitch_threshold,
+        flow_threshold=0.4,
+        cellprob_threshold=0.0,
+    )
+
+    labels_3d = masks.astype(np.int32)
+
+    # --- Filter out objects that only appear in a single Z-slice ---
+    props = sk.measure.regionprops(labels_3d)
+
+    # Create a copy or a new mask to clear single-slice components
+    filtered_labels = np.zeros_like(labels_3d)
+    new_label_id = 1
+
+    for prop in props:
+        z_min, y_min, x_min, z_max, y_max, x_max = prop.bbox
+        # z_max is exclusive in regionprops, so z_max - z_min is the number of slices it spans
+        z_span = z_max - z_min
+
+        # Keep the object only if it spans more than 1 slice
+        if z_span > 1:
+            # Re-label consecutively to keep IDs clean
+            object_mask = labels_3d == prop.label
+            filtered_labels[object_mask] = new_label_id
+            new_label_id += 1
+
+    return filtered_labels
+
+
+# def segment_cells_cellpose_3d(img, model_type="cpsam", diameter=None):
+#     """
+#     Segment macrophages in 3D slice-by-slice using Cellpose-SAM.
+
+#     This function processes each Z-slice independently using Cellpose and links
+#     cell instance labels across slices based on spatial overlap.
+
+#     Parameters
+#     ----------
+#     img : ndarray
+#         Input 3D image with shape [Z, Y, X]
+#     model_type : str, optional
+#         Cellpose model type (e.g., 'cpsam' for cellpose-sam, 'cyto3', etc.), by default 'cpsam'
+#     diameter : float, optional
+#         Expected cell diameter in pixels, by default None (lets Cellpose estimate)
+
+#     Returns
+#     -------
+#     labels_3d : ndarray
+#         3D labeled array with shape [Z, Y, X] where each macrophage has a unique integer ID.
+#     """
+#     try:
+#         from cellpose import models
+#     except ImportError as e:
+#         raise ImportError(
+#             "Cellpose is not installed. Please install it using 'pip install cellpose'."
+#         ) from e
+
+#     # Initialize the Cellpose model (cpsam refers to Cellpose-SAM)
+#     model = models.CellposeModel(model_type=model_type)
+
+#     labels_3d = np.zeros_like(img, dtype=np.int32)
+#     next_label = 1
+#     active_labels_map = {}  # Maps 2D label from the previous slice to the 3D label
+
+#     for iZ in range(img.shape[0]):
+#         slice_img = img[iZ, :, :]
+
+#         # Run Cellpose 2D evaluation on the current slice
+#         masks, _, _ = model.eval(
+#             slice_img,
+#             diameter=diameter,
+#             channels=[0, 0],
+#             flow_threshold=0.4,
+#             cellprob_threshold=0.0,
+#         )
+
+#         if masks.max() == 0:
+#             continue
+
+#         current_slice_labels = np.zeros_like(masks, dtype=np.int32)
+#         new_active_labels_map = {}
+
+#         # Relabel and connect instances across slices using overlap
+#         for lbl in np.unique(masks):
+#             if lbl == 0:
+#                 continue
+
+#             mask_2d = masks == lbl
+
+#             if iZ == 0:
+#                 # First slice: assign new unique 3D labels
+#                 assigned_label = next_label
+#                 next_label += 1
+#             else:
+#                 # Subsequent slices: check overlap with previous slice labels
+#                 prev_overlap = labels_3d[iZ - 1, :, :] * mask_2d
+#                 unique_prev_labels, counts = np.unique(
+#                     prev_overlap[prev_overlap > 0], return_counts=True
+#                 )
+
+#                 if len(unique_prev_labels) > 0:
+#                     # Find the previous label with the largest pixel overlap
+#                     best_prev_lbl = unique_prev_labels[np.argmax(counts)]
+#                     if best_prev_lbl in active_labels_map:
+#                         assigned_label = active_labels_map[best_prev_lbl]
+#                     else:
+#                         assigned_label = next_label
+#                         next_label += 1
+#                 else:
+#                     # No overlap with previous slice, start a new 3D label
+#                     assigned_label = next_label
+#                     next_label += 1
+
+#             current_slice_labels[mask_2d] = assigned_label
+#             new_active_labels_map[lbl] = assigned_label
+
+#         labels_3d[iZ, :, :] = current_slice_labels
+#         active_labels_map = new_active_labels_map
+
+#     return labels_3d

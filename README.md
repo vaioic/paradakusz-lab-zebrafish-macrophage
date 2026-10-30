@@ -10,7 +10,6 @@ The goal is to establish a robust and reproducible pipeline capable of extractin
 
 This project is in active development and things might change rapidly.
 
-
 ## Usage
 
 ### Setup and installation

@@ -5,10 +5,26 @@ description = "Pipeline to analyze 3D images of zebrafish"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "cellpose>=4.2.1.1",
     "imaris-ims-file-reader>=0.1.8",
     "matplotlib>=3.11.1",
     "numpy>=2.5.2",
     "pandas>=3.0.5",
     "scikit-image>=0.26.0",
     "tifffile>=2026.8.23",
+    "xarray>=2026.9.0",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.26,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "shared"
+module-root = ""
