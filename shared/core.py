@@ -24,8 +24,8 @@ def read_image(file):
 
     Returns
     -------
-    nucl_img : ndarray
-        A 3D array containing the nuclear channel (channel 0). Shape is [Z, Y, X]
+    macrophage_img : ndarray
+        A 3D array containing the macrophage channel (channel 0). Shape is [Z, Y, X]
     protein_img : ndarray
         A 3D array containing the labeled protein channel (channel 1). Shape is [Z, Y, X]
 
@@ -46,15 +46,118 @@ def read_image(file):
 
     img = ims(file)
 
-    nucl_img = (img[0, 0, :, :, :]).copy()
+    macrophage_img = (img[0, 0, :, :, :]).copy()
     protein_img = (img[0, 1, :, :, :]).copy()
 
+    # Close the IMS-file
     del img
 
-    return nucl_img, protein_img
+    return macrophage_img, protein_img
 
 
-def segment_cells_3d(img, plot_debug=False):
+def preprocess_macrophage_image(
+    image, output_path, rolling_ball_radius=30, psf_sigma=(1.0, 2.0, 2.0), iterations=10
+):
+
+    output_path = Path(output_path)
+
+    output_dir = output_path.parent
+    output_dir.mkdir(exist_ok=True, parents=True)
+
+    from skimage import morphology
+    from skimage.restoration import richardson_lucy
+
+    # Background subtraction
+    img_float = image.astype(np.float32)
+
+    print(image.shape)
+    print(image.dtype)
+
+    cleaned_stack = np.empty_like(img_float)
+    for z in range(img_float.shape[0]):
+        background = morphology.opening(
+            img_float[z], morphology.disk(rolling_ball_radius)
+        )
+        # Subtract background, clipping negative values
+        corrected = np.clip(img_float[z] - background, 0, None)
+        cleaned_stack[z] = corrected
+
+    # # Try deconvolution to clean up the halo-ing
+    # z_sig, y_sig, x_sig = psf_sigma
+
+    # sz, sy, sx = 5, 9, 9
+    # zz, yy, xx = np.mgrid[-sz : sz + 1, -sy : sy + 1, -sx : sx + 1]
+    # psf = np.exp(
+    #     -(zz**2 / (2 * z_sig**2) + yy**2 / (2 * y_sig**2) + xx**2 / (2 * x_sig**2))
+    # )
+    # psf /= psf.sum()  # Normalize
+
+    # 1. Define your voxel sizes (in microns)
+    dz, dy, dx = 0.49, 0.24, 0.24
+
+    # 2. Microscope optical parameters (adjust these to your setup)
+    wavelength = 0.488
+    na = 0.95  # Numerical Aperture of your objective
+
+    # 3. Calculate theoretical FWHM (Full Width at Half Maximum) in microns
+    # (Standard widefield diffraction-limited approximations)
+    fwhm_xy = 0.61 * wavelength / na
+    fwhm_z = 2.0 * wavelength / (na**2)
+
+    # Convert FWHM to Gaussian sigma (sigma = FWHM / 2.3548)
+    sigma_xy = fwhm_xy / 2.3548
+    sigma_z = fwhm_z / 2.3548
+
+    # 4. Generate the coordinate grid for the PSF kernel
+    # (Keep kernel size odd, e.g., 15x15x15 or 21x21x21, large enough to cover ~3-4 * sigma)
+    kernel_z, kernel_y, kernel_x = 15, 15, 15
+
+    z = np.linspace(-kernel_z // 2, kernel_z // 2, kernel_z) * dz
+    y = np.linspace(-kernel_y // 2, kernel_y // 2, kernel_y) * dy
+    x = np.linspace(-kernel_x // 2, kernel_x // 2, kernel_x) * dx
+    Z, Y, X = np.meshgrid(z, y, x, indexing="ij")
+
+    # 5. Compute the 3D Gaussian PSF
+    psf = np.exp(-((X**2 + Y**2) / (2 * sigma_xy**2) + (Z**2) / (2 * sigma_z**2)))
+
+    # 6. CRITICAL: Normalize the PSF so its total sum equals 1
+    psf /= psf.sum()
+
+    cleaned_stack_norm = cleaned_stack / 65535.0
+
+    deconvolved_stack = richardson_lucy(
+        cleaned_stack_norm, psf, num_iter=iterations, clip=True
+    )
+
+    # Normalize back to 16-bit unsigned integer range for Imaris compatibility
+    deconvolved_stack = np.clip(deconvolved_stack, 0.0, 1.0)
+    deconvolved_stack = (deconvolved_stack * 65535).astype(np.uint16)
+
+    print(deconvolved_stack.dtype)
+
+    # Combine the original and pre-processed image
+    merged_stack = np.stack(
+        [image, cleaned_stack.astype(np.uint16), deconvolved_stack], axis=1
+    )
+
+    print(merged_stack.shape)
+
+    tifffile.imwrite(
+        output_path,
+        merged_stack,
+        imagej=True,
+        metadata={"Labels": ["Original", "Background Subtracted", "Deconvolved"]},
+    )
+
+
+def preprocess_protein_image(image, output_path, median_filter_size=(5, 5)):
+
+    image = 1
+
+
+def segment_cells_3d(
+    img, plot_debug=False, mode="multiotsu", threshold_classes=3, threshold_value=0
+):
     """
     Segment macrophages in 3D
 
@@ -74,20 +177,37 @@ def segment_cells_3d(img, plot_debug=False):
     # Pre-process the image to normalize intensity
     img_norm = normalize_image_prctile(img, upper=99.5, lower=10)
 
-    thresh = sk.filters.threshold_otsu(img_norm)
+    # thresh = sk.filters.threshold_otsu(img_norm)
+    # thresh = sk.filters.threshold_otsu(img_norm)
 
-    mask = img_norm > thresh
+    match mode.lower():
+        case "multiotsu":
+            thresh = sk.filters.threshold_multiotsu(img_norm, classes=threshold_classes)
 
-    mask = sk.morphology.opening(mask, sk.morphology.footprint_rectangle((1, 3, 3)))
+            mask = img_norm > thresh[threshold_value]
+
+        case "yen":
+            thresh = sk.filters.threshold_yen(img_norm)
+
+            mask = img_norm > thresh
+
+        case "minimum":
+            thresh = sk.filters.threshold_yen(img_norm)
+
+            mask = img_norm > thresh
+    # print(thresh)
+    # exit()
+
+    mask = sk.morphology.opening(mask, sk.morphology.ball(3))
 
     # mask = sk.morphology.opening(mask, sk.morphology.ball(3))
     mask = sk.morphology.remove_small_holes(mask, max_size=1000, connectivity=3)
 
-    for iZ in range(mask.shape[0]):
-        # Try and filter non-round objects
-        curr_mask = mask[iZ, ...]
-        curr_mask = sk.morphology.opening(curr_mask, sk.morphology.disk(7))
-        mask[iZ, ...] = curr_mask
+    # for iZ in range(mask.shape[0]):
+    #     # Try and filter non-round objects
+    #     curr_mask = mask[iZ, ...]
+    #     curr_mask = sk.morphology.opening(curr_mask, sk.morphology.disk(7))
+    #     mask[iZ, ...] = curr_mask
 
     labels = sk.measure.label(mask)
 
@@ -120,33 +240,41 @@ def segment_blobs(img):
 
     img_norm = normalize_image_prctile(img, lower=5, upper=99.5)
 
+    ball = sk.morphology.ball(3)
+
+    img_norm = sk.filters.median(img_norm, footprint=ball)
+
     # diff_of_gaussians = sk.filters.difference_of_gaussians(img_norm, low_sigma=2, high_sigma=10)
 
     # thresh = sk.filters.threshold_otsu(diff_of_gaussians)
 
     # blobs_mask = diff_of_gaussians > thresh
 
-    thresh = sk.filters.threshold_otsu(img_norm)
+    thresh = sk.filters.threshold_triangle(img_norm)
 
     blobs_mask = img_norm > thresh
 
-    blobs_mask = sk.morphology.opening(
-        blobs_mask, sk.morphology.footprint_rectangle((1, 3, 3))
-    )
+    blobs_mask = sk.morphology.opening(blobs_mask, ball)
 
-    for iZ in range(blobs_mask.shape[0]):
-        blobs_mask[iZ, :, :] = sk.morphology.remove_small_holes(
-            blobs_mask[iZ, :, :], max_size=500
-        )
-        blobs_mask[iZ, :, :] = sk.morphology.remove_small_objects(
-            blobs_mask[iZ, :, :], max_size=50
-        )
+    # blobs_mask = sk.morphology.opening(
+    #     blobs_mask, sk.morphology.footprint_rectangle((1, 3, 3))
+    # )
+
+    # for iZ in range(blobs_mask.shape[0]):
+    #     blobs_mask[iZ, :, :] = sk.morphology.remove_small_holes(
+    #         blobs_mask[iZ, :, :], max_size=500
+    #     )
+    #     blobs_mask[iZ, :, :] = sk.morphology.remove_small_objects(
+    #         blobs_mask[iZ, :, :], max_size=50
+    #     )
 
     # overlay = sk.segmentation.mark_boundaries(img_norm[9, :, :], blobs_mask[9, :, :])
 
+    labels = sk.measure.label(blobs_mask)
+
     # plt.imshow(overlay)
     # plt.show()
-    return blobs_mask
+    return labels
 
 
 def normalize_image_prctile(img, upper=100, lower=2):
@@ -246,8 +374,8 @@ def analyze_image(file, output_dir, save_data=True):
 
     nucl_img, protein_img = read_image(file)
 
-    # cell_labels = segment_cells_3d(nucl_img)
-    cell_labels = segment_cells_cellpose_3d(nucl_img, model_type="cpsam", diameter=30)
+    cell_labels = segment_cells_3d(nucl_img)
+    # cell_labels = segment_cells_cellpose_3d(nucl_img, model_type="cpsam", diameter=30)
     blob_labels = segment_blobs(protein_img)
 
     # Measure properties
